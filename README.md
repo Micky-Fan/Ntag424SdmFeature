@@ -1,5 +1,49 @@
 # NTAG 424 DNA Secure Dynamic Messaging ("SDM") Feature
 
+> ## huge-forest fork — 打卡標籤佈建
+>
+> 這個 fork 改造 **Encrypted SUN** 畫面，讓它可以一次完成 huge-forest 打卡標籤的佈建：
+> 寫入打卡網址 + 啟用 SDM（加密 PICC data + CMAC）+ **把自訂 AES 金鑰寫進 application key 2**。
+> 上游原版只能用出廠全零金鑰示範，無法換金鑰。
+>
+> ### 一次性設定
+>
+> 在專案根目錄的 `local.properties`（**已被 gitignore，金鑰不會進版控**）加入：
+>
+> ```properties
+> # 32 個十六進位字元；用 `openssl rand -hex 16` 產生
+> hugeForest.sdmKeyHex=你的金鑰
+> # 可省略，預設就是這個值
+> hugeForest.baseUrl=https://huge-forest.vercel.app
+> ```
+>
+> 沒設定時預設用**出廠全零金鑰**，方便先測通流程（此時 App 會跳過換金鑰並在畫面提示）。
+> 這個值必須與伺服器的 `NFC_SDM_MASTER_KEY` 環境變數完全一致。
+>
+> ### 燒錄步驟
+>
+> 1. Android Studio 開啟專案 → build → 安裝到手機。
+> 2. 主畫面選 **Encrypted SUN**。
+> 3. 在 **storeId** 欄位填入該門市的 id（從 `/stores/<id>/dashboard` 網址複製）。
+> 4. 手機貼上標籤 → 自動寫入，畫面會逐步顯示結果。
+>
+> 寫入內容：`{baseUrl}/stores/{storeId}/checkin?picc_data={PICC}&cmac={MAC}`
+>
+> ### 設計重點
+>
+> - **UID + read counter 兩個 mirror 強制開啟**（不論選哪個 radio button）——伺服器解密
+>   PICCData 時預期 tag `0xC7`；只有 UID 會失去防重放、只有 counter 會失去標籤身分。
+> - **加密與 CMAC 用同一把金鑰**（`sdmMetaReadPerm` = `sdmFileReadPerm` = key 2），
+>   對應伺服器端單一 `NFC_SDM_MASTER_KEY` 的設計。
+> - **ChangeKey 放在最後執行**：前面的 file settings 步驟都要用金鑰 2 認證，先換金鑰會讓那些步驟失敗。
+> - **認證有 fallback**（出廠金鑰 → 自訂金鑰），所以已佈建過的標籤可以重寫（例如改 storeId）。
+> - **金鑰格式嚴格驗證**：不是正好 32 個 hex 字元就拒絕寫入，避免把打錯的金鑰寫進標籤導致永久鎖死。
+> - 金鑰 0（master）**刻意保持出廠值**——ChangeKey 需要用它認證。
+>
+> ⚠️ **金鑰務必存進密碼管理器**。標籤一旦寫入自訂金鑰，遺失金鑰就無法再認證、標籤永久無法重設。
+>
+> ---
+
 This is the accompanying app to my articles **Demystify the Secure Dynamic Message with NTAG 424 DNA NFC tags (Android/Java) Parts 1 and 2**,
 available here:
 

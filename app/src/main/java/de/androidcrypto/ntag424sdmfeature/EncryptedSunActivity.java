@@ -32,6 +32,7 @@ import androidx.core.view.WindowInsetsCompat;
 
 import net.bplearning.ntag424.DnaCommunicator;
 import net.bplearning.ntag424.command.ChangeFileSettings;
+import net.bplearning.ntag424.command.ChangeKey;
 import net.bplearning.ntag424.command.FileSettings;
 import net.bplearning.ntag424.command.GetFileSettings;
 import net.bplearning.ntag424.command.WriteData;
@@ -47,11 +48,40 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
 
     private static final String TAG = EncryptedSunActivity.class.getSimpleName();
     private com.google.android.material.textfield.TextInputEditText output;
+    private com.google.android.material.textfield.TextInputEditText etStoreId;
     private RadioButton rbUid, rbCounter, rbUidCounter;
     private DnaCommunicator dnaC = new DnaCommunicator();
     private NfcAdapter mNfcAdapter;
     private IsoDep isoDep;
     private byte[] tagIdByte;
+
+    /**
+     * huge-forest: the storeId typed in the UI. onTagDiscovered runs on an NFC
+     * thread, so the value is mirrored here by a TextWatcher instead of being
+     * read off the widget from a background thread.
+     */
+    private volatile String hugeForestStoreId = "";
+
+    /**
+     * huge-forest SDM key from local.properties (see app/build.gradle).
+     * Null when the configured value is not exactly 32 hex characters — writing
+     * is refused in that case rather than installing a malformed key, which
+     * would lock the tag with a value nobody knows.
+     */
+    private static final byte[] HUGE_FOREST_SDM_KEY = parseSdmKey(BuildConfig.HUGE_FOREST_SDM_KEY);
+
+    private static byte[] parseSdmKey(String hex) {
+        if (hex == null || !hex.trim().matches("(?i)^[0-9a-f]{32}$")) {
+            return null;
+        }
+        byte[] key = Utils.hexStringToByteArray(hex.trim());
+        return (key != null && key.length == 16) ? key : null;
+    }
+
+    /** True while the key is still the factory all-zero value (test phase). */
+    private static boolean isFactoryTestKey() {
+        return java.util.Arrays.equals(HUGE_FOREST_SDM_KEY, Ntag424.FACTORY_KEY);
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -68,11 +98,50 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
         setSupportActionBar(myToolbar);
 
         output = findViewById(R.id.etOutput);
+        etStoreId = findViewById(R.id.etStoreId);
         rbUid = findViewById(R.id.rbFieldUid);
         rbCounter = findViewById(R.id.rbFieldCounter);
         rbUidCounter = findViewById(R.id.rbFieldUidCounter);
 
+        // huge-forest: mirror the storeId so the NFC thread can read it safely
+        hugeForestStoreId = etStoreId.getText() == null
+                ? "" : etStoreId.getText().toString().trim();
+        etStoreId.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                hugeForestStoreId = s.toString().trim();
+            }
+        });
+
         mNfcAdapter = NfcAdapter.getDefaultAdapter(this);
+    }
+
+    /**
+     * huge-forest: authenticates a key slot, trying the factory key first and
+     * the configured SDM key second. The fallback is what makes re-writing an
+     * already-provisioned tag possible (e.g. correcting the storeId) — after
+     * provisioning, key 2 is no longer the factory value.
+     */
+    private boolean authenticateWithFallback(int keyNo, boolean isLrpMode) {
+        boolean ok = isLrpMode
+                ? LRPEncryptionMode.authenticateLRP(dnaC, keyNo, Ntag424.FACTORY_KEY)
+                : AESEncryptionMode.authenticateEV2(dnaC, keyNo, Ntag424.FACTORY_KEY);
+        if (ok || isFactoryTestKey()) {
+            return ok;
+        }
+        writeToUiAppend(output,
+                "Key " + keyNo + " is not the factory key, retrying with the huge-forest key");
+        return isLrpMode
+                ? LRPEncryptionMode.authenticateLRP(dnaC, keyNo, HUGE_FOREST_SDM_KEY)
+                : AESEncryptionMode.authenticateEV2(dnaC, keyNo, HUGE_FOREST_SDM_KEY);
     }
 
     /**
@@ -187,6 +256,28 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
             @Override
             public void run() {
                 boolean success = false;
+
+                // huge-forest: refuse to write a tag without a storeId — the
+                // resulting URL would 404 and the tag would need re-writing.
+                final String storeId = hugeForestStoreId;
+                if (TextUtils.isEmpty(storeId)) {
+                    writeToUiAppend(output,
+                            "huge-forest: please enter the storeId first, aborted");
+                    return;
+                }
+                if (HUGE_FOREST_SDM_KEY == null) {
+                    writeToUiAppend(output,
+                            "huge-forest: hugeForest.sdmKeyHex must be exactly 32 hex characters, aborted");
+                    return;
+                }
+                final String checkInUrl = BuildConfig.HUGE_FOREST_BASE_URL
+                        + "/stores/" + storeId
+                        + "/checkin?picc_data={PICC}&cmac={MAC}";
+                writeToUiAppend(output, "huge-forest URL template: " + checkInUrl);
+                writeToUiAppend(output, isFactoryTestKey()
+                        ? "SDM key: FACTORY all-zero (test phase — not for production)"
+                        : "SDM key: custom key from local.properties");
+
                 try {
                     dnaC = new DnaCommunicator();
                     try {
@@ -258,12 +349,10 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
                         // do nothing, skip authentication
                     } else {
                         if (ACCESS_KEY_RW != ACCESS_KEY0) {
-                            // silent authentication
-                            if (!isLrpAuthenticationMode) {
-                                success = AESEncryptionMode.authenticateEV2(dnaC, ACCESS_KEY_RW, Ntag424.FACTORY_KEY);
-                            } else {
-                                success = LRPEncryptionMode.authenticateLRP(dnaC, ACCESS_KEY_RW, Ntag424.FACTORY_KEY);
-                            }
+                            // silent authentication (huge-forest: falls back to
+                            // the custom key so already-provisioned tags can be
+                            // re-written)
+                            success = authenticateWithFallback(ACCESS_KEY_RW, isLrpAuthenticationMode);
                             if (!success) {
                                 writeToUiAppend(output, "Error on Authentication with ACCESS KEY RW, aborted");
                                 return;
@@ -282,17 +371,17 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
                     NdefTemplateMaster master = new NdefTemplateMaster();
                     master.usesLRP = isLrpAuthenticationMode;
                     master.fileDataLength = 0; // no (encrypted) file data
-                    if (rbUid.isChecked()) {
-                        sdmSettings.sdmOptionUid = true;
-                        sdmSettings.sdmOptionReadCounter = false;
-                    } else if (rbCounter.isChecked()) {
-                        sdmSettings.sdmOptionUid = false;
-                        sdmSettings.sdmOptionReadCounter = true;
-                    } else {
-                        sdmSettings.sdmOptionUid = true;
-                        sdmSettings.sdmOptionReadCounter = true;
+                    // huge-forest: the server decrypts PICCData expecting tag
+                    // 0xC7 = UID *and* read counter, so both mirrors are forced
+                    // on regardless of the radio buttons. UID alone loses replay
+                    // protection; counter alone loses the tag identity.
+                    sdmSettings.sdmOptionUid = true;
+                    sdmSettings.sdmOptionReadCounter = true;
+                    if (rbUid.isChecked() || rbCounter.isChecked()) {
+                        writeToUiAppend(output,
+                                "huge-forest: forcing UID + Counter (server requires PICCDataTag C7)");
                     }
-                    ndefRecord = master.generateNdefTemplateFromUrlString("https://sdm.nfcdeveloper.com/tag?picc_data={PICC}&cmac={MAC}", sdmSettings);
+                    ndefRecord = master.generateNdefTemplateFromUrlString(checkInUrl, sdmSettings);
                     try {
                         WriteData.run(dnaC, NDEF_FILE_NUMBER, ndefRecord, 0);
                     } catch (IOException e) {
@@ -305,12 +394,8 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
 
                     // check if we authenticated with the right key - here we need the CAR key
                     if (ACCESS_KEY_CAR != ACCESS_KEY_RW) {
-                        // silent authentication
-                        if (!isLrpAuthenticationMode) {
-                            success = AESEncryptionMode.authenticateEV2(dnaC, ACCESS_KEY_CAR, Ntag424.FACTORY_KEY);
-                        } else {
-                            success = LRPEncryptionMode.authenticateLRP(dnaC, ACCESS_KEY_CAR, Ntag424.FACTORY_KEY);
-                        }
+                        // silent authentication (huge-forest: with custom-key fallback)
+                        success = authenticateWithFallback(ACCESS_KEY_CAR, isLrpAuthenticationMode);
                         if (!success) {
                             writeToUiAppend(output, "Error on Authentication with ACCESS KEY CAR, aborted");
                             return;
@@ -331,6 +416,64 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
                         return;
                     }
                     writeToUiAppend(output, "File 02h Change File Settings SUCCESS");
+
+                    /**
+                     * huge-forest: install the SDM key on application key 2.
+                     *
+                     * Key 2 is what sdmMetaReadPerm and sdmFileReadPerm above
+                     * point at, so it is the key the server needs (a single key
+                     * for both PICC decryption and CMAC). This runs last on
+                     * purpose: everything above authenticates key 2, so changing
+                     * it earlier would break the file-settings steps.
+                     *
+                     * Changing a key requires an authentication with key 0
+                     * (master), which is deliberately left at the factory value.
+                     */
+                    if (isFactoryTestKey()) {
+                        writeToUiAppend(output,
+                                "SDM key is the factory all-zero value - skipping ChangeKey.");
+                        writeToUiAppend(output,
+                                "Set hugeForest.sdmKeyHex in local.properties before production use.");
+                    } else {
+                        success = isLrpAuthenticationMode
+                                ? LRPEncryptionMode.authenticateLRP(dnaC, ACCESS_KEY0, Ntag424.FACTORY_KEY)
+                                : AESEncryptionMode.authenticateEV2(dnaC, ACCESS_KEY0, Ntag424.FACTORY_KEY);
+                        if (!success) {
+                            writeToUiAppend(output,
+                                    "Error authenticating key 0 for ChangeKey - SDM key NOT installed");
+                            return;
+                        }
+
+                        // A fresh tag still holds the factory key; a re-written
+                        // tag already holds ours, in which case this is a no-op
+                        // rewrite of the same value.
+                        boolean keyChanged = false;
+                        try {
+                            ChangeKey.run(dnaC, ACCESS_KEY2, Ntag424.FACTORY_KEY,
+                                    HUGE_FOREST_SDM_KEY, 1);
+                            keyChanged = true;
+                        } catch (IOException e) {
+                            Log.e(TAG, "ChangeKey 2 from factory key failed: " + e.getMessage());
+                        }
+                        if (!keyChanged) {
+                            writeToUiAppend(output,
+                                    "Key 2 was not the factory key, retrying with the huge-forest key");
+                            try {
+                                ChangeKey.run(dnaC, ACCESS_KEY2, HUGE_FOREST_SDM_KEY,
+                                        HUGE_FOREST_SDM_KEY, 1);
+                                keyChanged = true;
+                            } catch (IOException e) {
+                                Log.e(TAG, "ChangeKey 2 retry failed: " + e.getMessage());
+                            }
+                        }
+                        if (keyChanged) {
+                            writeToUiAppend(output, "Install SDM key on Application Key 2 SUCCESS");
+                        } else {
+                            writeToUiAppend(output,
+                                    "Install SDM key on Application Key 2 FAILURE - tag keeps its previous key");
+                            return;
+                        }
+                    }
 
                 } catch (IOException e) {
                     Log.e(TAG, "Exception: " + e.getMessage());

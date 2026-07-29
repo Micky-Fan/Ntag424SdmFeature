@@ -109,6 +109,24 @@
 
             </RadioGroup>
 
+            <com.google.android.material.textfield.TextInputLayout
+                android:id="@+id/etStoreIdLayout"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="16dp"
+                android:layout_marginEnd="16dp"
+                android:hint="huge-forest storeId (from /stores/&lt;id&gt;/dashboard)">
+
+                <com.google.android.material.textfield.TextInputEditText
+                    android:id="@+id/etStoreId"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:inputType="textNoSuggestions"
+                    android:maxLines="1" />
+
+            </com.google.android.material.textfield.TextInputLayout>
+
             <TextView
                 android:id="@+id/tvInformation"
                 android:layout_width="match_parent"
@@ -118,7 +136,7 @@
                 android:layout_marginEnd="16dp"
                 android:background="@drawable/share_rounded_corner_light_orange_with_border"
                 android:padding="4dp"
-                android:text="Please note: when a NTAG424DNA tag is tapped to the NFC reader the action runs without any further confirmation."
+                android:text="huge-forest: enter the storeId above, then tap the tag. Writing runs immediately with no further confirmation."
                 android:textAlignment="center"
                 android:textColor="@color/black"
                 android:textSize="18sp"

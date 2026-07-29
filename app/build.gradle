@@ -2,6 +2,20 @@ plugins {
     alias(libs.plugins.androidApplication)
 }
 
+// huge-forest: the SDM key is a secret and must never be committed. It is read
+// from local.properties (already gitignored) and exposed via BuildConfig.
+// Defaults keep the factory all-zero key so a fresh clone still builds and can
+// be used for the all-zero test phase.
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+def hugeForestSdmKey = localProperties.getProperty(
+        'hugeForest.sdmKeyHex', '00000000000000000000000000000000')
+def hugeForestBaseUrl = localProperties.getProperty(
+        'hugeForest.baseUrl', 'https://huge-forest.vercel.app')
+
 android {
     namespace 'de.androidcrypto.ntag424sdmfeature'
     compileSdk 34
@@ -14,6 +28,13 @@ android {
         versionName "1.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField "String", "HUGE_FOREST_SDM_KEY", "\"${hugeForestSdmKey}\""
+        buildConfigField "String", "HUGE_FOREST_BASE_URL", "\"${hugeForestBaseUrl}\""
+    }
+
+    buildFeatures {
+        buildConfig true
     }
 
     buildTypes {
