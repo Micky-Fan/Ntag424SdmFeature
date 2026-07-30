@@ -130,7 +130,7 @@ public class EncryptedSunActivity extends AppCompatActivity implements NfcAdapte
      * already-provisioned tag possible (e.g. correcting the storeId) — after
      * provisioning, key 2 is no longer the factory value.
      */
-    private boolean authenticateWithFallback(int keyNo, boolean isLrpMode) {
+    private boolean authenticateWithFallback(int keyNo, boolean isLrpMode) throws IOException {
         boolean ok = isLrpMode
                 ? LRPEncryptionMode.authenticateLRP(dnaC, keyNo, Ntag424.FACTORY_KEY)
                 : AESEncryptionMode.authenticateEV2(dnaC, keyNo, Ntag424.FACTORY_KEY);
